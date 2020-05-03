@@ -513,7 +513,9 @@ public class ListingPanel extends JPanel implements FieldMouseListener, FieldLoc
 			listingHoverHandler.initializeListingHoverHandler(handler);
 			listingHoverHandler.dispose();
 		}
+
 		listingHoverHandler = handler;
+		fieldPanel.setHoverProvider(listingHoverHandler);
 	}
 
 	public void dispose() {
@@ -684,8 +686,7 @@ public class ListingPanel extends JPanel implements FieldMouseListener, FieldLoc
 		boolean didOpen = false;
 		while (data != null) {
 			if (!listingModel.isOpen(data)) {
-				listingModel.openData(data);
-				didOpen = true;
+				didOpen |= listingModel.openData(data);
 			}
 			data = data.getParent();
 		}

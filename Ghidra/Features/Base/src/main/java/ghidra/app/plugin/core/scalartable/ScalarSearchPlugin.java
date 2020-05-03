@@ -145,7 +145,7 @@ public class ScalarSearchPlugin extends ProgramPlugin implements DomainObjectLis
 			}
 
 			@Override
-			protected boolean isValidContext(NavigatableActionContext context) {
+			protected boolean isEnabledForContext(NavigatableActionContext context) {
 				return !(context instanceof RestrictedAddressSetContext);
 			}
 		};

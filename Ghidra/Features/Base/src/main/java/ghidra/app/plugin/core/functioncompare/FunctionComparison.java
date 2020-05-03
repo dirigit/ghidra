@@ -101,31 +101,64 @@ public class FunctionComparison implements Comparable<FunctionComparison> {
 
 	/**
 	 * Ensures that FunctionComparison objects are always ordered according
-	 * to the source function name
+	 * to the source program path, name and address
 	 */
 	@Override
 	public int compareTo(FunctionComparison o) {
 		if (o == null) {
 			return 1;
 		}
-		return getSource().getName().compareTo(o.getSource().getName());
+
+		String sourcePath = getSource().getProgram().getDomainFile().getPathname();
+		String otherPath = o.getSource().getProgram().getDomainFile().getPathname();
+
+		String sourceName = getSource().getName();
+		String otherName = o.getSource().getName();
+		int result = sourcePath.compareTo(otherPath);
+		if (result != 0) {
+			return result;
+		}
+
+		// equal paths
+		result = sourceName.compareTo(otherName);
+		if (result != 0) {
+			return result;
+		}
+
+		// equal names
+		return getSource().getEntryPoint().compareTo(o.getSource().getEntryPoint());
 	}
 
 	/**
-	 * Forces an ordering on {@link Function} objects by name. This is 
-	 * to ensure that the list of targets is kept in sorted order at all times.
+	 * Forces an ordering on {@link Function} objects by program path, name and 
+	 * address. This is to ensure that the list of targets is kept in sorted 
+	 * order at all times.
 	 */
 	class FunctionComparator implements Comparator<Function> {
 
 		@Override
 		public int compare(Function o1, Function o2) {
-			if (o1 == o2) {
-				return 0;
-			}
 			if (o2 == null) {
 				return 1;
 			}
-			return o1.getName().compareTo(o2.getName());
+
+			String o1Path = o1.getProgram().getDomainFile().getPathname();
+			String o2Path = o2.getProgram().getDomainFile().getPathname();
+			int result = o1Path.compareTo(o2Path);
+			if (result != 0) {
+				return result;
+			}
+
+			// equal paths
+			String o1Name = o1.getName();
+			String o2Name = o2.getName();
+			result = o1Name.compareTo(o2Name);
+			if (result != 0) {
+				return result;
+			}
+
+			// equal names
+			return o1.getEntryPoint().compareTo(o2.getEntryPoint());
 		}
 	}
 }

@@ -323,12 +323,10 @@ public class GTable extends JTable {
 			};
 		}
 
+		removeKeyListener(autoLookupListener);
 		if (lookupColumn >= 0 && lookupColumn < getModel().getColumnCount()) {
 			addKeyListener(autoLookupListener);
 			enableActionKeyBindings = false;
-		}
-		else {
-			removeKeyListener(autoLookupListener);
 		}
 	}
 
@@ -1203,7 +1201,7 @@ public class GTable extends JTable {
 		GTableToCSV.writeCSVUsingColunns(file, GTable.this, columnList);
 	}
 
-	public static void createSharedActions(DockingTool tool, ToolActions toolActions,
+	public static void createSharedActions(Tool tool, ToolActions toolActions,
 			String owner) {
 
 		String actionMenuGroup = "zzzTableGroup";

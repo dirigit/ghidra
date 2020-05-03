@@ -118,11 +118,6 @@ public class DockingActionProxy
 	}
 
 	@Override
-	public boolean isValidGlobalContext(ActionContext context) {
-		return dockingAction.isValidGlobalContext(context);
-	}
-
-	@Override
 	public void removePropertyChangeListener(PropertyChangeListener listener) {
 		propertyListeners.remove(listener);
 	}
@@ -231,6 +226,16 @@ public class DockingActionProxy
 
 	@Override
 	public String toString() {
-		return dockingAction.getName();
+		return dockingAction.toString();
+	}
+
+	@Override
+	public void setSupportsDefaultToolContext(boolean newValue) {
+		dockingAction.setSupportsDefaultToolContext(newValue);
+	}
+
+	@Override
+	public boolean supportsDefaultToolContext() {
+		return dockingAction.supportsDefaultToolContext();
 	}
 }

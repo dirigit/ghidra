@@ -45,7 +45,7 @@ public class SymbolPathParser {
 			throw new IllegalArgumentException(
 				"Symbol list must contain at least one symbol name!");
 		}
-		if (name.indexOf(Namespace.NAMESPACE_DELIMITER) == -1) {
+		if (name.indexOf(Namespace.DELIMITER) == -1) {
 			List<String> list = new ArrayList<>();
 			list.add(name);
 			return list;
@@ -72,8 +72,8 @@ public class SymbolPathParser {
 					int endIndex = i; // could be 0 if i == 0.
 					if (endIndex > startIndex) {
 						list.add(name.substring(startIndex, endIndex));
-						i += 2;
-						startIndex = i;
+						startIndex = i + 2;
+						i++; // Only increment one, because the loop also has an increment.
 					}
 				}
 			}
@@ -100,8 +100,8 @@ public class SymbolPathParser {
 					int endIndex = i; // could be 0 if i == 0.
 					if (endIndex > startIndex) {
 						list.add(name.substring(startIndex, endIndex));
-						i += 2;
-						startIndex = i;
+						startIndex = i + 2;
+						i++; // Only increment one, because the loop also has an increment.
 					}
 				}
 			}

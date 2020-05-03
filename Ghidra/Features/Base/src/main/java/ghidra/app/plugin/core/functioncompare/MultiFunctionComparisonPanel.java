@@ -89,19 +89,17 @@ public class MultiFunctionComparisonPanel extends FunctionComparisonPanel {
 	 */
 	@Override
 	public void reload() {
-		SwingUtilities.invokeLater(() -> {
-			reloadSourceList();
-			Function selectedSource = (Function) sourceFunctionsCBModel.getSelectedItem();
-			reloadTargetList(selectedSource);
-			loadFunctions(selectedSource, (Function) targetFunctionsCBModel.getSelectedItem());
+		reloadSourceList();
+		Function selectedSource = (Function) sourceFunctionsCBModel.getSelectedItem();
+		reloadTargetList(selectedSource);
+		loadFunctions(selectedSource, (Function) targetFunctionsCBModel.getSelectedItem());
 
-			updateTabText();
+		updateTabText();
 
-			// Fire a notification to update the UI state; without this the 
-			// actions would not be properly enabled/disabled
-			tool.contextChanged(provider);
-			tool.setStatusInfo("function comparisons updated");
-		});
+		// Fire a notification to update the UI state; without this the 
+		// actions would not be properly enabled/disabled
+		tool.contextChanged(provider);
+		tool.setStatusInfo("function comparisons updated");
 	}
 
 	/**
@@ -114,6 +112,24 @@ public class MultiFunctionComparisonPanel extends FunctionComparisonPanel {
 			getCurrentComponent();
 		boolean sourceHasFocus = currentComponent.leftPanelHasFocus();
 		return sourceHasFocus ? sourceFunctionsCB : targetFunctionsCB;
+	}
+
+	/**
+	 * Returns the source combo box
+	 * 
+	 * @return the source combo box
+	 */
+	public JComboBox<Function> getSourceComponent() {
+		return sourceFunctionsCB;
+	}
+
+	/**
+	 * Returns the target combo box
+	 * 
+	 * @return the target combo box
+	 */
+	public JComboBox<Function> getTargetComponent() {
+		return targetFunctionsCB;
 	}
 
 	/**
@@ -306,9 +322,15 @@ public class MultiFunctionComparisonPanel extends FunctionComparisonPanel {
 			}
 
 			Function f = (Function) value;
-			String text = f.getName() + " (" + f.getProgram().getName() + ")";
+
+			String functionName = f.getName();
+			String functionPathToProgram = f.getProgram().getDomainFile().getPathname();
+			String functionAddress = f.getBody().getMinAddress().toString();
+			String text = functionName + "@" + functionAddress + " (" + functionPathToProgram + ")";
+
 			return super.getListCellRendererComponent(list, text, index, isSelected,
 				cellHasFocus);
 		}
 	}
+
 }

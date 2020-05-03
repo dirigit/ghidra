@@ -873,8 +873,10 @@ Varnode *RulePullsubMulti::buildSubpiece(Varnode *basevn,uint4 outsize,uint4 shi
   data.opSetOpcode(new_op,CPUI_SUBPIECE);
   if (usetmp)
     outvn = data.newUniqueOut(outsize,new_op);
-  else
+  else {
+    smalladdr1.renormalize(outsize);
     outvn = data.newVarnodeOut(outsize,smalladdr1,new_op);
+  }
   data.opSetInput(new_op,basevn,0);
   data.opSetInput(new_op,data.newConstant(4,shift),1);
 
@@ -943,6 +945,26 @@ int4 RulePullsubMulti::applyOp(PcodeOp *op,Funcdata &data)
   Varnode *outvn = op->getOut();
   if (outvn->isPrecisLo()||outvn->isPrecisHi()) return 0; // Don't pull apart a double precision object
 
+  // Make sure we don't new add SUBPIECE ops that aren't going to cancel in some way
+  int4 branches = mult->numInput();
+  uintb consume = calc_mask(newSize) << 8*minByte;
+  consume = ~consume;			// Check for use of bits outside of what gets truncated later
+  for(int4 i=0;i<branches;++i) {
+    Varnode *inVn = mult->getIn(i);
+    if ((consume & inVn->getConsume()) != 0) {	// Check if bits not truncated are still used
+      // Check if there's an extension that matches the truncation
+      if (minByte == 0 && inVn->isWritten()) {
+	PcodeOp *defOp = inVn->getDef();
+	OpCode opc = defOp->code();
+	if (opc == CPUI_INT_ZEXT || opc == CPUI_INT_SEXT) {
+	  if (newSize == defOp->getIn(0)->getSize())
+	    continue;		// We have matching extension, so new SUBPIECE will cancel anyway
+	}
+      }
+      return 0;
+    }
+  }
+
   Address smalladdr2;
   if (!vn->getSpace()->isBigEndian())
     smalladdr2 = vn->getAddr()+minByte;
@@ -950,7 +972,6 @@ int4 RulePullsubMulti::applyOp(PcodeOp *op,Funcdata &data)
     smalladdr2 = vn->getAddr()+(vn->getSize()-maxByte-1);
 
   vector<Varnode *> params;
-  int4 branches = mult->numInput();
 
   for(int4 i=0;i<branches;++i) {
     Varnode *vn_piece = mult->getIn(i);
@@ -964,6 +985,7 @@ int4 RulePullsubMulti::applyOp(PcodeOp *op,Funcdata &data)
   }
 				// Build new multiequal near original multiequal
   PcodeOp *new_multi = data.newOp(params.size(),mult->getAddr());
+  smalladdr2.renormalize(newSize);
   Varnode *new_vn = data.newVarnodeOut(newSize,smalladdr2,new_multi);
   data.opSetOpcode(new_multi,CPUI_MULTIEQUAL);
   data.opSetAllInput(new_multi,params);
@@ -1002,6 +1024,10 @@ int4 RulePullsubIndirect::applyOp(PcodeOp *op,Funcdata &data)
   if (!RulePullsubMulti::acceptableSize(newSize)) return 0;
   Varnode *outvn = op->getOut();
   if (outvn->isPrecisLo()||outvn->isPrecisHi()) return 0; // Don't pull apart double precision object
+
+  uintb consume = calc_mask(newSize) << 8 * minByte;
+  consume = ~consume;
+  if ((consume & indir->getIn(0)->getConsume())!=0) return 0;
 
   Varnode *small2;
   Address smalladdr2;
@@ -1884,9 +1910,9 @@ int4 RuleDoubleShift::applyOp(PcodeOp *op,Funcdata &data)
 }
 
 /// \class RuleDoubleArithShift
-/// \brief Simply two sequential INT_SRIGHT: `(x s>> #c) s>> #d   =>  x s>> saturate(#c + #d)`
+/// \brief Simplify two sequential INT_SRIGHT: `(x s>> #c) s>> #d   =>  x s>> saturate(#c + #d)`
 ///
-/// Optimized division optimization in particular can produce a sequence of signed right shifts.
+/// Division optimization in particular can produce a sequence of signed right shifts.
 /// The shift amounts add up to the point where the sign bit has saturated the entire result.
 void RuleDoubleArithShift::getOpList(vector<uint4> &oplist) const
 
@@ -2005,6 +2031,7 @@ int4 RuleLeftRight::applyOp(PcodeOp *op,Funcdata &data)
     addr = addr + isa;
   data.opUnsetInput(op,0);
   data.opUnsetOutput(leftshift);
+  addr.renormalize(tsz);
   Varnode *newvn = data.newVarnodeOut(tsz,addr,leftshift);
   data.opSetOpcode(leftshift,CPUI_SUBPIECE);
   data.opSetInput(leftshift, data.newConstant( leftshift->getIn(1)->getSize(), 0), 1);
@@ -2483,6 +2510,7 @@ int4 RuleZextEliminate::applyOp(PcodeOp *op,Funcdata &data)
   if (!vn2->isConstant()) return 0;
   zext = vn1->getDef();
   if (!zext->getIn(0)->isHeritageKnown()) return 0;
+  if (vn1->loneDescend() != op) return 0;	// Make sure extension is not used for anything else
   smallsize = zext->getIn(0)->getSize();
   val = vn2->getOffset();
   if ((val>>(8*smallsize))==0) { // Is zero extension unnecessary
@@ -7251,7 +7279,7 @@ int4 RuleSubvarAnd::applyOp(PcodeOp *op,Funcdata &data)
   //  if ((vn->getConsume() & 0xff)==0xff) return 0;
   //  if (op->getIn(1)->getOffset() != (uintb)1) return 0;
   if (op->getOut()->hasNoDescend()) return 0;
-  SubvariableFlow subflow(&data,vn,cmask,false,false);
+  SubvariableFlow subflow(&data,vn,cmask,false,false,false);
   if (!subflow.doTrace()) return 0;
   subflow.doReplacement();
   return 1;
@@ -7270,14 +7298,24 @@ int4 RuleSubvarSubpiece::applyOp(PcodeOp *op,Funcdata &data)
 {
   Varnode *vn = op->getIn(0);
   Varnode *outvn = op->getOut();
-  uintb mask = calc_mask( outvn->getSize() );
+  int4 flowsize = outvn->getSize();
+  uintb mask = calc_mask( flowsize );
   mask <<= 8*((int4)op->getIn(1)->getOffset());
   bool aggressive = outvn->isPtrFlow();
   if (!aggressive) {
     if ((vn->getConsume() & mask) != vn->getConsume()) return 0;
     if (op->getOut()->hasNoDescend()) return 0;
   }
-  SubvariableFlow subflow(&data,vn,mask,aggressive,false);
+  bool big = false;
+  if (flowsize >= 8 && vn->isInput()) {
+    // Vector register inputs getting truncated to what actually gets used
+    // happens occasionally.  We let SubvariableFlow deal with this special case
+    // to avoid overlapping inputs
+    // TODO: ActionLaneDivide should be handling this
+    if (vn->loneDescend() == op)
+      big = true;
+  }
+  SubvariableFlow subflow(&data,vn,mask,aggressive,false,big);
   if (!subflow.doTrace()) return 0;
   subflow.doReplacement();
   return 1;
@@ -7348,7 +7386,7 @@ RulePtrFlow::RulePtrFlow(const string &g,Architecture *conf)
   : Rule( g, 0, "ptrflow")
 {
   glb = conf;
-  hasTruncations = glb->getDefaultSpace()->isTruncated();
+  hasTruncations = glb->getDefaultDataSpace()->isTruncated();
 }
 
 void RulePtrFlow::getOpList(vector<uint4> &oplist) const
@@ -7456,6 +7494,7 @@ Varnode *RulePtrFlow::truncatePointer(AddrSpace *spc,PcodeOp *op,Varnode *vn,int
     Address addr = vn->getAddr();
     if (addr.isBigEndian())
       addr = addr + (vn->getSize() - spc->getAddrSize());
+    addr.renormalize(spc->getAddrSize());
     newvn = data.newVarnodeOut(spc->getAddrSize(),addr,truncop);
   }
   data.opSetInput(op,newvn,slot);
@@ -7486,7 +7525,7 @@ int4 RulePtrFlow::applyOp(PcodeOp *op,Funcdata &data)
   case CPUI_CALLIND:
   case CPUI_BRANCHIND:
     vn = op->getIn(0);
-    spc = data.getArch()->getDefaultSpace();
+    spc = data.getArch()->getDefaultCodeSpace();
     if (vn->getSize() > spc->getAddrSize()) {
       vn = truncatePointer(spc,op,vn,0,data);
       madeChange = 1;
@@ -7595,7 +7634,7 @@ int4 RuleSubvarCompZero::applyOp(PcodeOp *op,Funcdata &data)
     }
   }
   
-  SubvariableFlow subflow(&data,vn,mask,false,false);
+  SubvariableFlow subflow(&data,vn,mask,false,false,false);
   if (!subflow.doTrace()) {
     return 0;
   }
@@ -7627,7 +7666,7 @@ int4 RuleSubvarShift::applyOp(PcodeOp *op,Funcdata &data)
   mask = (mask >> sa) << sa;
   if (op->getOut()->hasNoDescend()) return 0;
 
-  SubvariableFlow subflow(&data,vn,mask,false,false);
+  SubvariableFlow subflow(&data,vn,mask,false,false,false);
   if (!subflow.doTrace()) return 0;
   subflow.doReplacement();
   return 1;
@@ -7648,7 +7687,7 @@ int4 RuleSubvarZext::applyOp(PcodeOp *op,Funcdata &data)
   Varnode *invn = op->getIn(0);
   uintb mask = calc_mask(invn->getSize());
 
-  SubvariableFlow subflow(&data,vn,mask,invn->isPtrFlow(),false);
+  SubvariableFlow subflow(&data,vn,mask,invn->isPtrFlow(),false,false);
   if (!subflow.doTrace()) return 0;
   subflow.doReplacement();
   return 1;
@@ -7669,7 +7708,7 @@ int4 RuleSubvarSext::applyOp(PcodeOp *op,Funcdata &data)
   Varnode *invn = op->getIn(0);
   uintb mask = calc_mask(invn->getSize());
 
-  SubvariableFlow subflow(&data,vn,mask,isaggressive,true);
+  SubvariableFlow subflow(&data,vn,mask,isaggressive,true,false);
   if (!subflow.doTrace()) return 0;
   subflow.doReplacement();
   return 1;
@@ -8628,3 +8667,194 @@ Varnode *RulePopcountBoolXor::getBooleanResult(Varnode *vn,int4 bitPos,int4 &con
   }
   return (Varnode *)0;	// Never reach here
 }
+
+/// \brief Return \b true if concatenating with a SUBPIECE of the given Varnode is unusual
+///
+/// \param vn is the given Varnode
+/// \param data is the function containing the Varnode
+/// \return \b true if the configuration is a pathology
+bool RulePiecePathology::isPathology(Varnode *vn,Funcdata &data)
+
+{
+  vector<PcodeOp *> worklist;
+  int4 pos = 0;
+  int4 slot = 0;
+  bool res = false;
+  for(;;) {
+    if (vn->isInput() && !vn->isPersist()) {
+      res = true;
+      break;
+    }
+    PcodeOp *op = vn->getDef();
+    while(!res && op != (PcodeOp *)0) {
+      switch(op->code()) {
+	case CPUI_COPY:
+	  vn = op->getIn(0);
+	  op = vn->getDef();
+	  break;
+	case CPUI_MULTIEQUAL:
+	  if (!op->isMark()) {
+	    op->setMark();
+	    worklist.push_back(op);
+	  }
+	  op = (PcodeOp *)0;
+	  break;
+	case CPUI_INDIRECT:
+	  if (op->getIn(1)->getSpace()->getType() == IPTR_IOP) {
+	    PcodeOp *callOp = PcodeOp::getOpFromConst(op->getIn(1)->getAddr());
+	    if (callOp->isCall()) {
+	      FuncCallSpecs *fspec = data.getCallSpecs(callOp);
+	      if (fspec != (FuncCallSpecs *) 0 && !fspec->isOutputActive()) {
+		res = true;
+	      }
+	    }
+	  }
+	  op = (PcodeOp *)0;
+	  break;
+	case CPUI_CALL:
+	case CPUI_CALLIND:
+	{
+	  FuncCallSpecs *fspec = data.getCallSpecs(op);
+	  if (fspec != (FuncCallSpecs *)0 && !fspec->isOutputActive()) {
+	    res = true;
+	  }
+	  break;
+	}
+	default:
+	  op = (PcodeOp *)0;
+	  break;
+      }
+    }
+    if (res) break;
+    if (pos >= worklist.size()) break;
+    op = worklist[pos];
+    if (slot < op->numInput()) {
+      vn = op->getIn(slot);
+      slot += 1;
+    }
+    else {
+      pos += 1;
+      if (pos >= worklist.size()) break;
+      vn = worklist[pos]->getIn(0);
+      slot = 1;
+    }
+  }
+  for(int4 i=0;i<worklist.size();++i)
+    worklist[i]->clearMark();
+  return res;
+}
+
+/// \brief Given a known pathological concatenation, trace it forward to CALLs and RETURNs
+///
+/// If the pathology reaches a CALL or RETURN, it is noted, through the FuncProto or FuncCallSpecs
+/// object, that the parameter or return value is only partially consumed.  The subvariable flow
+/// rules can then decide whether or not to truncate this part of the data-flow.
+/// \param op is CPUI_PIECE op that is the pathological concatenation
+/// \param data is the function containing the data-flow
+/// \return a non-zero value if new bytes are labeled as unconsumed
+int4 RulePiecePathology::tracePathologyForward(PcodeOp *op,Funcdata &data)
+
+{
+  int4 count = 0;
+  const FuncCallSpecs *fProto;
+  vector<PcodeOp *> worklist;
+  int4 pos = 0;
+  op->setMark();
+  worklist.push_back(op);
+  while(pos < worklist.size()) {
+    PcodeOp *curOp = worklist[pos];
+    pos += 1;
+    Varnode *outVn = curOp->getOut();
+    list<PcodeOp *>::const_iterator iter;
+    list<PcodeOp *>::const_iterator enditer = outVn->endDescend();
+    for(iter=outVn->beginDescend();iter!=enditer;++iter) {
+      curOp = *iter;
+      switch(curOp->code()) {
+	case CPUI_COPY:
+	case CPUI_INDIRECT:
+	case CPUI_MULTIEQUAL:
+	  if (!curOp->isMark()) {
+	    curOp->setMark();
+	    worklist.push_back(curOp);
+	  }
+	  break;
+	case CPUI_CALL:
+	case CPUI_CALLIND:
+	  fProto = data.getCallSpecs(curOp);
+	  if (fProto != (FuncProto *)0 && !fProto->isInputActive() && !fProto->isInputLocked()) {
+	    int4 bytesConsumed = op->getIn(1)->getSize();
+	    for(int4 i=1;i<curOp->numInput();++i) {
+	      if (curOp->getIn(i) == outVn) {
+		if (fProto->setInputBytesConsumed(i, bytesConsumed))
+		  count += 1;
+	      }
+	    }
+	  }
+	  break;
+	case CPUI_RETURN:
+	  if (!data.getFuncProto().isOutputLocked()) {
+	    if (data.getFuncProto().setReturnBytesConsumed(op->getIn(1)->getSize()))
+	      count += 1;
+	  }
+	  break;
+	default:
+	  break;
+      }
+    }
+  }
+  for(int4 i=0;i<worklist.size();++i)
+    worklist[i]->clearMark();
+  return count;
+}
+
+/// \class RulePiecePathology
+/// \brief Search for concatenations with unlikely things to inform return/parameter consumption calculation
+///
+/// For that can read/write part of a general purpose register, a small return value can get concatenated
+/// with unrelated data when the function writes directly to part of the return register. This searches
+/// for a characteristic pathology:
+/// \code
+///     retreg = CALL();
+///     ...
+///     retreg = CONCAT(SUBPIECE(retreg,#4),smallval);
+/// \endcode
+void RulePiecePathology::getOpList(vector<uint4> &oplist) const
+
+{
+  oplist.push_back(CPUI_PIECE);
+}
+
+int4 RulePiecePathology::applyOp(PcodeOp *op,Funcdata &data)
+
+{
+  Varnode *vn = op->getIn(0);
+  if (!vn->isWritten()) return 0;
+  PcodeOp *subOp = vn->getDef();
+
+  // Make sure we are concatenating the most significant bytes of a truncation
+  OpCode opc = subOp->code();
+  if (opc == CPUI_SUBPIECE) {
+    if (subOp->getIn(1)->getOffset() == 0) return 0;
+    if (!isPathology(subOp->getIn(0),data)) return 0;
+  }
+  else if (opc == CPUI_INDIRECT) {
+    if (!subOp->isIndirectCreation()) return 0;
+    Varnode *retVn = op->getIn(1);
+    if (!retVn->isWritten()) return 0;
+    PcodeOp *callOp = retVn->getDef();
+    if (!callOp->isCall()) return 0;
+    FuncCallSpecs *fc = data.getCallSpecs(callOp);
+    if (fc == (FuncCallSpecs *)0) return 0;
+    if (!fc->isOutputLocked()) return 0;
+    Address addr = retVn->getAddr();
+    if (addr.getSpace()->isBigEndian())
+      addr = addr - vn->getSize();
+    else
+      addr = addr + retVn->getSize();
+    if (addr != vn->getAddr()) return 0;
+  }
+  else
+    return 0;
+  return tracePathologyForward(op, data);
+}
+

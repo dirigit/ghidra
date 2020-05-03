@@ -15,14 +15,18 @@
  */
 package docking.action.builder;
 
+import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 import javax.swing.Icon;
+import javax.swing.KeyStroke;
 
 import docking.*;
 import docking.action.*;
+import docking.actions.KeyBindingUtils;
 import ghidra.util.HelpLocation;
+import ghidra.util.Msg;
 import resources.ResourceManager;
 
 /**
@@ -39,9 +43,16 @@ import resources.ResourceManager;
  *
  * @param <T> The type of DockingAction to build
  * @param <B> the Type of action builder
+ * @param <C> The type of ActionContext. By default, the ActionContext type always starts as
+ * the base ActionContext class.  If the client calls the {@link #withContext(Class)} method on 
+ * the builder, then that class (which must be a subclass of ActionContext) becomes the ActionContext
+ * type that will be used for future calls to the builder methods that take predicates with
+ * ActionContext (i.e. {@link #enabledWhen(Predicate)} and {@link #validContextWhen(Predicate)}. 
+ * This works by substituting a builder with a different ActionContext type when chaining after
+ * the {@link #withContext(Class)} call.
  */
-public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends AbstractActionBuilder<T, B>> {
-
+public abstract class AbstractActionBuilder<T extends DockingActionIf, C extends ActionContext, B extends AbstractActionBuilder<T, C, B>> {
+	private final Predicate<C> ALWAYS_TRUE = e -> true;
 	/**
 	 * Name for the {@code DockingAction}
 	 */
@@ -53,6 +64,11 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	protected String owner;
 
 	/**
+	 * Specifies the type of ActionContext that the built action works on.
+	 */
+	protected Class<? extends ActionContext> actionContextClass;
+
+	/**
 	 * The {@code KeyBindingType} for this {@code DockingAction}
 	 */
 	protected KeyBindingType keyBindingType = KeyBindingType.INDIVIDUAL;
@@ -60,7 +76,7 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	/**
 	 * The callback to perform when the action is invoked
 	 */
-	protected Consumer<ActionContext> actionCallback;
+	protected Consumer<C> actionCallback;
 
 	/**
 	 * Description for the {@code DockingAction}.  (optional)
@@ -138,24 +154,29 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	private String toolBarSubGroup;
 
 	/**
+	 * The key binding to assign to the action
+	 */
+	private KeyStroke keyBinding;
+
+	/**
 	 * Predicate for determining if an action is enabled for a given context
 	 */
-	private Predicate<ActionContext> enabledPredicate;
+	private Predicate<C> enabledPredicate = ALWAYS_TRUE;
 
 	/**
 	 * Predicate for determining if an action should be included on the pop-up menu
 	 */
-	private Predicate<ActionContext> popupPredicate;
+	private Predicate<C> popupPredicate = ALWAYS_TRUE;
 
 	/**
 	 * Predicate for determining if an action is applicable for a given context
 	 */
-	private Predicate<ActionContext> validContextPredicate;
+	private Predicate<C> validContextPredicate = ALWAYS_TRUE;
 
 	/**
-	 * Predicate for determining if an action is applicable for a given global context
+	 * Set to true if the action supports using the default tool context if the local context is invalid
 	 */
-	private Predicate<ActionContext> validGlobalContextPredicate;
+	private boolean supportsDefaultToolContext;
 
 	/**
 	 * Builder constructor
@@ -165,6 +186,7 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	public AbstractActionBuilder(String name, String owner) {
 		this.name = name;
 		this.owner = owner;
+		this.actionContextClass = ActionContext.class;
 	}
 
 	/**
@@ -175,7 +197,7 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 
 	/**
 	 * Builds the action.  To build and install the action in one step, use 
-	 * {@link #buildAndInstall(DockingTool)} or {@link #buildAndInstallLocal(ComponentProvider)}.
+	 * {@link #buildAndInstall(Tool)} or {@link #buildAndInstallLocal(ComponentProvider)}.
 	 * 
 	 * @return the newly build action 
 	 */
@@ -189,7 +211,7 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 * @see #build()
 	 * @see #buildAndInstallLocal(ComponentProvider)
 	 */
-	public T buildAndInstall(DockingTool tool) {
+	public T buildAndInstall(Tool tool) {
 		T action = build();
 		tool.addAction(action);
 		return action;
@@ -201,7 +223,7 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 * @param provider the provider to add the action to
 	 * @return the newly created action
 	 * @see #build()
-	 * @see #buildAndInstall(DockingTool)
+	 * @see #buildAndInstall(Tool)
 	 */
 	public T buildAndInstallLocal(ComponentProvider provider) {
 		T action = build();
@@ -225,7 +247,7 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 * Configure whether this {@code DockingAction} is enabled.
 	 * 
 	 * <p><b>Note: most clients do not need to use this method.  Enablement is controlled by 
-	 * {@link #validContextWhen(Predicate)} or {@link #validGlobalContextWhen(Predicate)}.
+	 * {@link #validContextWhen(Predicate)}.
 	 * </b>
 	 * 
 	 * @param b {@code true} if enabled
@@ -368,7 +390,8 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 * @see #popupMenuGroup(String)
 	 */
 	public B popupMenuGroup(String group, String subGroup) {
-		popupSubGroup = group;
+		popupGroup = group;
+		popupSubGroup = subGroup;
 		return self();
 	}
 
@@ -444,7 +467,34 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 * @see #toolBarGroup(String)
 	 */
 	public B toolBarGroup(String group, String subGroup) {
-		toolBarSubGroup = group;
+		toolBarGroup = group;
+		toolBarSubGroup = subGroup;
+		return self();
+	}
+
+	/**
+	 * Sets the key binding for this action
+	 * 
+	 * @param keyStroke the KeyStroke to bind to this action
+	 * @return this builder (for chaining)
+	 */
+	public B keyBinding(KeyStroke keyStroke) {
+		this.keyBinding = keyStroke;
+		return self();
+	}
+
+	/**
+	 * Sets the key binding for this action
+	 * 
+	 * @param keyStrokeString the string to parse as a KeyStroke. See
+	 *  {@link KeyStroke#getKeyStroke(String)} for the format of the string.
+	 * @return this builder (for chaining)
+	 */
+	public B keyBinding(String keyStrokeString) {
+		this.keyBinding = KeyBindingUtils.parseKeyStroke(keyStrokeString);
+		if (keyBinding == null && keyStrokeString != null) {
+			Msg.warn(this, "Can't parse KeyStroke: " + keyStrokeString);
+		}
 		return self();
 	}
 
@@ -456,7 +506,7 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 * @param action the callback to execute when the action is invoked
 	 * @return this builder (for chaining)
 	 */
-	public B onAction(Consumer<ActionContext> action) {
+	public B onAction(Consumer<C> action) {
 		actionCallback = action;
 		return self();
 	}
@@ -473,8 +523,8 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 *        enabled state
 	 * @return this builder (for chaining)
 	 */
-	public B enabledWhen(Predicate<ActionContext> predicate) {
-		enabledPredicate = predicate;
+	public B enabledWhen(Predicate<C> predicate) {
+		enabledPredicate = Objects.requireNonNull(predicate);
 		return self();
 	}
 
@@ -496,8 +546,8 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 * @return this builder (for chaining)
 	 * @see #popupMenuPath(String...)
 	 */
-	public B popupWhen(Predicate<ActionContext> predicate) {
-		popupPredicate = predicate;
+	public B popupWhen(Predicate<C> predicate) {
+		popupPredicate = Objects.requireNonNull(predicate);
 		return self();
 	}
 
@@ -512,25 +562,86 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	 * validity for a given {@link ActionContext}
 	 * @return this builder (for chaining)
 	 */
-	public B validContextWhen(Predicate<ActionContext> predicate) {
-		validContextPredicate = predicate;
+	public B validContextWhen(Predicate<C> predicate) {
+		validContextPredicate = Objects.requireNonNull(predicate);
 		return self();
 	}
 
 	/**
-	 * Sets a predicate for dynamically determining if this action is valid for the current global 
-	 * {@link ActionContext}.  See {@link DockingActionIf#isValidGlobalContext(ActionContext)}.
+	 * Sets whether the action will support using the default tool context if the focused provider's
+	 * context is invalid.
+	 * <P>
+	 * By default, actions only work on the current focused provider's context.  Setting this
+	 * to true will cause the action to be evaluated against the default tool context if the
+	 * focused context is not valid for this action.
 	 * 
-	 * <p>Note: most actions will not use this method, but rely instead on 
-	 * {@link #enabledWhen(Predicate)}. 
-	 *  
-	 * @param predicate the predicate that will be used to dynamically determine an action's 
-	 * validity for a given global {@link ActionContext}
+	 * @param b the new value
 	 * @return this builder (for chaining)
 	 */
-	public B validGlobalContextWhen(Predicate<ActionContext> predicate) {
-		validGlobalContextPredicate = predicate;
+	public B supportsDefaultToolContext(boolean b) {
+		supportsDefaultToolContext = b;
 		return self();
+	}
+
+	/**
+	 * Sets the specific ActionContext type to use for the various predicate calls 
+	 * ({@link #validContextWhen(Predicate)}, {@link #enabledWhen(Predicate)}, and 
+	 * {@link #popupWhen(Predicate)}).
+	 * <P>
+	 * In other words, this allows the client to specify the type of ActionContext that is valid for
+	 * the action being built.
+	 * <P>
+	 * To be effective, this method must be called  <b>before</b> setting any of the predicates 
+	 * such as the {@link #enabledWhen(Predicate)}.  Once this method is called you can define your
+	 * predicates using the more specific ActionContext and be assured your predicates will only
+	 * be called when the current action context is the type (or sub-type) of the context you have
+	 * specified here.
+	 * <P>
+	 * For example, assume you have an action that is only enabled when the context is of type
+	 * FooActionContext.  If you don't call this method to set the ActionContext type,  you would have
+	 * to write your predicate something like this:
+	 * <pre>
+	 * {@literal builder.enabledWhen(context -> }{
+	 *     if (!(context instanceof FooContext)) {
+	 *         return false;
+	 *     }
+	 *     return ((FooContext) context).isAwesome();
+	 * });
+	 * </pre>
+	 * But by first calling the builder method <CODE>withContext(FooContext.class)</CODE>, you can 
+	 * simply write:
+	 *
+	 * <pre>
+	 * {@literal builder.enabledWhen(context -> return context.isAwesome() }}
+	 * </pre>
+	 *
+	 * @param newActionContextClass the more specific ActionContext type.
+	 * @param <AC2> The new ActionContext type (as determined by the newActionContextClass) that
+	 * the returned builder will have.
+	 * @param <B2> the new builder type.
+	 * @return an ActionBuilder whose generic types have been modified to match the new ActionContext.
+	 * It still contains all the configuration that has been applied so far.
+	 */
+	@SuppressWarnings("unchecked")
+	public <AC2 extends ActionContext, B2 extends AbstractActionBuilder<T, AC2, B2>> B2 withContext(
+			Class<AC2> newActionContextClass) {
+
+		if (actionContextClass != ActionContext.class) {
+			throw new IllegalStateException("Can't set the ActionContext type more than once");
+		}
+
+		// To make this work, we need to return a builder whose ActionContext is AC2 and not AC
+		//    (which is what this builder is now)
+		//
+		// Since we "know" that the only thing that matters regarding the ActionContext type is that
+		// the template type (AC) must match the type of actionContextClass instance variable, we
+		// can get away with returning this same builder and casting it to be a builder with type 
+		// AC2 instead of AC.  We can do this since we set the actionContextClass below
+
+		actionContextClass = newActionContextClass;
+
+		B2 newSelf = (B2) self();
+		return newSelf;
 	}
 
 	protected void validate() {
@@ -543,27 +654,40 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 	protected void decorateAction(DockingAction action) {
 		action.setEnabled(isEnabled);
 		action.setDescription(description);
+		action.setSupportsDefaultToolContext(supportsDefaultToolContext);
 
 		setMenuData(action);
 		setToolbarData(action);
 		setPopupMenuData(action);
+		setKeyBindingData(action);
 
 		if (helpLocation != null) {
 			action.setHelpLocation(helpLocation);
 		}
 
-		if (enabledPredicate != null) {
-			action.enabledWhen(enabledPredicate);
+		action.enabledWhen(adaptPredicate(enabledPredicate));
+		action.validContextWhen(adaptPredicate(validContextPredicate));
+		action.popupWhen(adaptPredicate(popupPredicate));
+	}
+
+	/**
+	 * Since the built action will need a predicate that handles any action type, this method 
+	 * creates a predicate that adapts a user supplied predicate for a more specific ActionContext
+	 * to a general predicate that can accept any ActionContext.
+	 * @param predicate the client supplied predicate that expects a more specific ActionContext
+	 * @return a predicate that can handle any ActionContext
+	 */
+	@SuppressWarnings("unchecked")
+	private Predicate<ActionContext> adaptPredicate(Predicate<C> predicate) {
+		if (actionContextClass == ActionContext.class) {
+			// don't wrap the predicate if it doesn't need it
+			return (Predicate<ActionContext>) predicate;
 		}
-		if (validContextPredicate != null) {
-			action.validContextWhen(validContextPredicate);
-		}
-		if (validGlobalContextPredicate != null) {
-			action.validGlobalContextWhen(validGlobalContextPredicate);
-		}
-		if (popupPredicate != null) {
-			action.popupWhen(enabledPredicate);
-		}
+		// Convert a sub-classed ActionContext predicate to a plain ActionContext predicate
+		Predicate<ActionContext> predicateAdapter = (ac) -> {
+			return actionContextClass.isInstance(ac) && predicate.test((C) ac);
+		};
+		return predicateAdapter;
 	}
 
 	protected boolean isPopupAction() {
@@ -576,6 +700,10 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 
 	protected boolean isMenuAction() {
 		return menuPath != null;
+	}
+
+	protected boolean isKeyBindingAction() {
+		return keyBinding != null;
 	}
 
 	private void setPopupMenuData(DockingAction action) {
@@ -598,4 +726,9 @@ public abstract class AbstractActionBuilder<T extends DockingActionIf, B extends
 		}
 	}
 
+	private void setKeyBindingData(DockingAction action) {
+		if (isKeyBindingAction()) {
+			action.setKeyBindingData(new KeyBindingData(keyBinding));
+		}
+	}
 }

@@ -76,6 +76,7 @@ public class SymbolTreeProvider extends ComponentProviderAdapter {
 	private List<GTreeTask> bufferedTasks = new ArrayList<>();
 	private SwingUpdateManager domainChangeUpdateManager = new SwingUpdateManager(1000,
 		SwingUpdateManager.DEFAULT_MAX_DELAY, "Symbol Tree Provider", () -> {
+
 			if (bufferedTasks.isEmpty()) {
 				return;
 			}
@@ -339,11 +340,7 @@ public class SymbolTreeProvider extends ComponentProviderAdapter {
 					sb.append("Parent namespace " + namespace.getName() +
 						" contains namespace named " + symbol.getName() + "\n");
 				}
-				catch (InvalidInputException e) {
-					sb.append("Could not change parent namespace for " + symbol.getName() + ": " +
-						e.getMessage() + "\n");
-				}
-				catch (CircularDependencyException e) {
+				catch (InvalidInputException | CircularDependencyException e) {
 					sb.append("Could not change parent namespace for " + symbol.getName() + ": " +
 						e.getMessage() + "\n");
 				}
@@ -408,7 +405,7 @@ public class SymbolTreeProvider extends ComponentProviderAdapter {
 	private void addTask(GTreeTask task) {
 		// Note: if we want to call this method from off the Swing thread, then we have to
 		//       synchronize on the list that we are adding to here.
-		SystemUtilities.assertThisIsTheSwingThread(
+		Swing.assertSwingThread(
 			"Adding tasks must be done on the Swing thread," +
 				"since they are put into a list that is processed on the Swing thread. ");
 
@@ -539,7 +536,10 @@ public class SymbolTreeProvider extends ComponentProviderAdapter {
 		public void run(TaskMonitor monitor) throws CancelledException {
 			TreePath[] selectionPaths = tree.getSelectionPaths();
 			doRun(monitor);
-			tree.setSelectionPaths(selectionPaths);
+
+			if (selectionPaths.length != 0) {
+				tree.setSelectionPaths(selectionPaths);
+			}
 		}
 
 		@Override
@@ -616,8 +616,9 @@ public class SymbolTreeProvider extends ComponentProviderAdapter {
 
 		@Override
 		public void runBulk(TaskMonitor monitor) throws CancelledException {
+
 			if (tasks.size() > MAX_TASK_COUNT) {
-				SystemUtilities.runSwingLater(() -> rebuildTree());
+				Swing.runLater(() -> rebuildTree());
 				return;
 			}
 
@@ -631,7 +632,8 @@ public class SymbolTreeProvider extends ComponentProviderAdapter {
 	private class SymbolTreeProviderDomainObjectListener implements DomainObjectListener {
 		@Override
 		public void domainObjectChanged(DomainObjectChangedEvent event) {
-			if (!tool.isVisible(SymbolTreeProvider.this)) {
+
+			if (ignoreEvents()) {
 				return;
 			}
 
@@ -688,6 +690,28 @@ public class SymbolTreeProvider extends ComponentProviderAdapter {
 				}
 			}
 
+		}
+
+		private boolean ignoreEvents() {
+			if (!isVisible()) {
+				return true;
+			}
+			return treeIsCollapsed();
+		}
+
+		private boolean treeIsCollapsed() {
+			// note: the root's children are visible by default
+			GTreeNode root = tree.getViewRoot();
+			if (!root.isExpanded()) {
+				return true;
+			}
+			List<GTreeNode> children = root.getChildren();
+			for (GTreeNode node : children) {
+				if (node.isExpanded()) {
+					return false;
+				}
+			}
+			return true;
 		}
 	}
 }

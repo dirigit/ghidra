@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 package docking.action.builder;
+
 import docking.ActionContext;
 import docking.action.DockingAction;
 
@@ -21,7 +22,7 @@ import docking.action.DockingAction;
  * Builder for {@link DockingAction}s
  */
 public class ActionBuilder
-		extends AbstractActionBuilder<DockingAction, ActionBuilder> {
+		extends AbstractActionBuilder<DockingAction, ActionContext, ActionBuilder> {
 
 	/**
 	 * Builder constructor
